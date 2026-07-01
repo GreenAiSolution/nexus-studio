@@ -43,14 +43,12 @@ export default function StudioPage() {
   const [activating, setActivating] = useState(false);
 
   useEffect(() => {
+    // Open studio — directly shareable. If someone signed in, greet them by
+    // name; otherwise just welcome them in (no gate).
     const user = getUser();
-    if (!user) {
-      router.replace('/');
-      return;
-    }
-    setFirstName(user.firstName);
+    if (user) setFirstName(user.firstName);
     setMounted(true);
-  }, [router]);
+  }, []);
 
   const selectedIndex = useMemo(
     () => (selection.planId ? CORE_PLANS.findIndex(p => p.id === selection.planId) : null),
