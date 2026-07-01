@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+:root {
+  /* Brand */
+  --primary: #6C63FF;
+  --secondary: #00D4FF;
+  --accent: #FF6B35;
+  --gold: #C9A84C;
+
+  /* Backgrounds */
+  --bg-primary: #08090A;
+  --bg-secondary: #0F1117;
+  --bg-tertiary: #161820;
+
+  /* Text */
+  --text-primary: #F8F9FF;
+  --text-secondary: #8890A0;
+  --text-tertiary: #4A5060;
+
+  /* Borders */
+  --border-default: #1E2030;
+  --border-light: #2A3040;
+
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-brand: 'Space Grotesk', 'Inter', sans-serif;
+}
+
+/* Tailwind v4 token mapping — powers utilities like bg-bg-primary, text-text-secondary, text-primary */
+@theme inline {
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
+  --color-accent: var(--accent);
+  --color-gold: var(--gold);
+
+  --color-bg-primary: var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-tertiary: var(--bg-tertiary);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+
+  --color-border: var(--border-default);
+  --color-border-light: var(--border-light);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+::selection {
+  background-color: var(--primary);
+  color: white;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg-primary); }
+::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

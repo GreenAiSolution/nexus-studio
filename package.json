@@ -1,0 +1,31 @@
+{
+  "name": "nexus-studio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NEXUS Studio — an immersive 3D experience for designing and buying your AI workforce.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "16.2.9",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "three": "0.184.0",
+    "@react-three/fiber": "^9.6.1",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/postprocessing": "^3.0.4",
+    "framer-motion": "^12.42.0",
+    "lucide-react": "^1.21.0"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/node": "^20",
+    "@types/three": "^0.184.0",
+    "tailwindcss": "^4",
+    "@tailwindcss/postcss": "^4"
+  }
+}
