@@ -16,9 +16,11 @@ import {
   ShieldCheck,
   Lock,
   Loader2,
-  PartyPopper,
 } from 'lucide-react';
 import { CORE_PLANS, ADD_ONS, summarize, type Selection } from '@/components/studio/catalog';
+import { defaultAgents, type DeployedAgent } from '@/components/studio/agent-catalog';
+import OnboardStage from '@/components/studio/onboard-stage';
+import DashboardStage from '@/components/studio/dashboard-stage';
 import { getUser, signOut } from '@/lib/session';
 
 const StudioCanvas = dynamic(() => import('@/components/studio/studio-canvas'), {
@@ -28,7 +30,7 @@ const StudioCanvas = dynamic(() => import('@/components/studio/studio-canvas'), 
 
 const ADDON_ICONS: Record<string, typeof Sparkles> = { Sparkles, Crown, Users, Plug, Headset };
 
-type Stage = 'enter' | 'select' | 'customize' | 'review' | 'pay' | 'done';
+type Stage = 'enter' | 'select' | 'customize' | 'review' | 'pay' | 'onboard' | 'dashboard';
 
 const money = (n: number) => `$${n.toLocaleString('en-US')}`;
 
@@ -41,6 +43,7 @@ export default function StudioPage() {
   const [hovered, setHovered] = useState<number | null>(null);
   const [selection, setSelection] = useState<Selection>({ planId: null, addOnIds: [] });
   const [activating, setActivating] = useState(false);
+  const [agents, setAgents] = useState<DeployedAgent[]>([]);
 
   useEffect(() => {
     // Open studio — directly shareable. If someone signed in, greet them by
@@ -80,8 +83,18 @@ export default function StudioPage() {
     // place a card is ever collected.
     setTimeout(() => {
       setActivating(false);
-      setStage('done');
+      if (order.plan) setAgents(defaultAgents(order.plan.agentSlots));
+      setStage('onboard');
     }, 1600);
+  };
+
+  const updateAgent = (id: string, patch: Partial<DeployedAgent>) =>
+    setAgents(prev => prev.map(a => (a.id === id ? { ...a, ...patch } : a)));
+
+  const resetWorkforce = () => {
+    setSelection({ planId: null, addOnIds: [] });
+    setAgents([]);
+    setStage('select');
   };
 
   const showCrystals = stage === 'select';
@@ -421,52 +434,24 @@ export default function StudioPage() {
           </motion.section>
         )}
 
-        {/* DONE */}
-        {stage === 'done' && (
-          <motion.section
-            key="done"
-            className="absolute inset-0 z-10 flex flex-col items-center justify-center px-6 text-center"
-            initial={{ opacity: 0, scale: 0.96 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.6 }}
-          >
-            <motion.div
-              initial={{ scale: 0, rotate: -20 }}
-              animate={{ scale: 1, rotate: 0 }}
-              transition={{ type: 'spring', delay: 0.15 }}
-              className="mb-6 grid h-20 w-20 place-items-center rounded-3xl"
-              style={{ background: 'linear-gradient(135deg,#6C63FF,#00D4FF)', boxShadow: '0 0 50px rgba(108,99,255,0.6)' }}
-            >
-              <PartyPopper className="h-10 w-10 text-white" />
-            </motion.div>
-            <h1 className="text-4xl font-bold sm:text-5xl">You&apos;re all set, {firstName}.</h1>
-            <p className="mt-4 max-w-md text-text-secondary">
-              Your {order.plan?.name} workforce
-              {order.addOns.length > 0 ? ` with ${order.addOns.length} specialist service${order.addOns.length > 1 ? 's' : ''}` : ''}{' '}
-              is being provisioned. We&apos;ll email you the moment your agents come online.
-            </p>
-            <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-              <button
-                onClick={() => {
-                  setSelection({ planId: null, addOnIds: [] });
-                  setStage('select');
-                }}
-                className="rounded-full border border-white/15 px-6 py-3 text-sm font-semibold text-white hover:bg-white/5"
-              >
-                Design another
-              </button>
-              <button
-                onClick={() => {
-                  signOut();
-                  router.push('/');
-                }}
-                className="rounded-full px-6 py-3 text-sm font-semibold text-white"
-                style={{ background: 'linear-gradient(135deg,#6C63FF,#00D4FF)' }}
-              >
-                Sign out
-              </button>
-            </div>
-          </motion.section>
+        {/* ONBOARD */}
+        {stage === 'onboard' && order.plan && (
+          <OnboardStage key="onboard" plan={order.plan} agents={agents} onChange={updateAgent} onDeploy={() => setStage('dashboard')} />
+        )}
+
+        {/* DASHBOARD */}
+        {stage === 'dashboard' && order.plan && (
+          <DashboardStage
+            key="dashboard"
+            plan={order.plan}
+            agents={agents}
+            order={order}
+            onReset={resetWorkforce}
+            onSignOut={() => {
+              signOut();
+              router.push('/');
+            }}
+          />
         )}
       </AnimatePresence>
     </div>

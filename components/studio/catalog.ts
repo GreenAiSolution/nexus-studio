@@ -12,6 +12,8 @@ export interface CorePlan {
   color: string;
   glow: string;
   features: string[];
+  /** How many agent slots to configure during onboarding (capped for UI, not a marketing claim). */
+  agentSlots: number;
 }
 
 export interface AddOn {
@@ -33,6 +35,7 @@ export const CORE_PLANS: CorePlan[] = [
     color: '#00D4FF',
     glow: 'rgba(0,212,255,0.55)',
     features: ['1 autonomous agent', '3 integrations', '500 runs / month', 'Email support'],
+    agentSlots: 1,
   },
   {
     id: 'OPERATOR',
@@ -43,6 +46,7 @@ export const CORE_PLANS: CorePlan[] = [
     color: '#6C63FF',
     glow: 'rgba(108,99,255,0.6)',
     features: ['5 autonomous agents', '10 integrations', '5,000 runs / month', 'Priority support'],
+    agentSlots: 4,
   },
   {
     id: 'EMPIRE',
@@ -53,6 +57,7 @@ export const CORE_PLANS: CorePlan[] = [
     color: '#C9A84C',
     glow: 'rgba(201,168,76,0.6)',
     features: ['Unlimited agents', 'All 15+ tools', 'Unlimited runs', 'Dedicated success manager'],
+    agentSlots: 6,
   },
 ];
 
