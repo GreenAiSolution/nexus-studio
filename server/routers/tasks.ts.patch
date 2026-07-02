@@ -1,0 +1,14 @@
+Import inngest at the top:
+import { inngest } from '@/inngest/client';
+
+Then in the create mutation, replace the TODO comment with:
+// Queue task with Inngest for execution
+await inngest.send({
+  name: 'agent/task.execute',
+  data: {
+    taskId: task.id,
+    agentId: input.agentId,
+    organizationId: ctx.orgId,
+    prompt: input.prompt,
+  },
+});

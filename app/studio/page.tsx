@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { useRouter } from 'next/navigation';
+import { useAuth, useUser, useClerk } from '@clerk/nextjs';
+import { redirect } from 'next/navigation';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowRight,
@@ -17,41 +18,41 @@ import {
   Lock,
   Loader2,
 } from 'lucide-react';
+import { trpc } from '@/lib/trpc';
 import { CORE_PLANS, ADD_ONS, summarize, type Selection } from '@/components/studio/catalog';
 import { defaultAgents, type DeployedAgent } from '@/components/studio/agent-catalog';
 import OnboardStage from '@/components/studio/onboard-stage';
 import DashboardStage from '@/components/studio/dashboard-stage';
-import { getUser, signOut } from '@/lib/session';
 
+// 3D scene is client-only.
 const StudioCanvas = dynamic(() => import('@/components/studio/studio-canvas'), {
   ssr: false,
   loading: () => <div className="absolute inset-0 bg-bg-primary" />,
 });
 
-const ADDON_ICONS: Record<string, typeof Sparkles> = { Sparkles, Crown, Users, Plug, Headset };
+const ADDON_ICONS: Record<string, typeof Sparkles> = {
+  Sparkles,
+  Crown,
+  Users,
+  Plug,
+  Headset,
+};
 
 type Stage = 'enter' | 'select' | 'customize' | 'review' | 'pay' | 'onboard' | 'dashboard';
 
 const money = (n: number) => `$${n.toLocaleString('en-US')}`;
 
 export default function StudioPage() {
-  const router = useRouter();
-  const [mounted, setMounted] = useState(false);
-  const [firstName, setFirstName] = useState('operator');
+  const { isLoaded, userId } = useAuth();
+  const { user } = useUser();
+  const { signOut } = useClerk();
 
   const [stage, setStage] = useState<Stage>('enter');
   const [hovered, setHovered] = useState<number | null>(null);
   const [selection, setSelection] = useState<Selection>({ planId: null, addOnIds: [] });
-  const [activating, setActivating] = useState(false);
   const [agents, setAgents] = useState<DeployedAgent[]>([]);
 
-  useEffect(() => {
-    // Open studio — directly shareable. If someone signed in, greet them by
-    // name; otherwise just welcome them in (no gate).
-    const user = getUser();
-    if (user) setFirstName(user.firstName);
-    setMounted(true);
-  }, []);
+  const checkout = trpc.subscription.createCheckoutSession.useMutation();
 
   const selectedIndex = useMemo(
     () => (selection.planId ? CORE_PLANS.findIndex(p => p.id === selection.planId) : null),
@@ -59,15 +60,19 @@ export default function StudioPage() {
   );
   const order = useMemo(() => summarize(selection), [selection]);
 
-  if (!mounted) {
+  if (!isLoaded) {
     return (
       <div className="absolute inset-0 grid place-items-center">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
       </div>
     );
   }
+  if (!userId) redirect('/sign-in');
 
-  const pickPlan = (i: number) => setSelection(s => ({ ...s, planId: CORE_PLANS[i].id }));
+  const firstName = user?.firstName || 'operator';
+
+  const pickPlan = (i: number) =>
+    setSelection(s => ({ ...s, planId: CORE_PLANS[i].id }));
 
   const toggleAddOn = (id: string) =>
     setSelection(s => ({
@@ -77,21 +82,25 @@ export default function StudioPage() {
         : [...s.addOnIds, id],
     }));
 
-  const handleActivate = () => {
-    setActivating(true);
-    // Simulated provisioning. Real Stripe Checkout drops in here — the only
-    // place a card is ever collected.
-    setTimeout(() => {
-      setActivating(false);
-      if (order.plan) setAgents(defaultAgents(order.plan.agentSlots));
+  const handleCheckout = async () => {
+    if (!selection.planId) return;
+    try {
+      await checkout.mutateAsync({ tier: selection.planId });
+      // Once Stripe is fully wired, a real hosted checkout URL will be
+      // returned here and we'll redirect to it instead. Until then, drop
+      // straight into onboarding so the studio always ends somewhere real.
+      const plan = CORE_PLANS.find(p => p.id === selection.planId)!;
+      setAgents(defaultAgents(plan.agentSlots));
       setStage('onboard');
-    }, 1600);
+    } catch {
+      /* surfaced via checkout.isError below */
+    }
   };
 
   const updateAgent = (id: string, patch: Partial<DeployedAgent>) =>
     setAgents(prev => prev.map(a => (a.id === id ? { ...a, ...patch } : a)));
 
-  const resetWorkforce = () => {
+  const resetStudio = () => {
     setSelection({ planId: null, addOnIds: [] });
     setAgents([]);
     setStage('select');
@@ -101,27 +110,29 @@ export default function StudioPage() {
 
   return (
     <div className="relative h-full w-full text-text-primary">
+      {/* 3D backdrop — always mounted so it never flickers between stages */}
       <div className="absolute inset-0">
         <StudioCanvas
           selectedIndex={selectedIndex}
           hoveredIndex={hovered}
-          onSelect={pickPlan}
+          onSelect={i => {
+            pickPlan(i);
+          }}
           onHover={setHovered}
           showCrystals={showCrystals}
         />
       </div>
 
+      {/* soft top/bottom gradient for legibility */}
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-bg-primary/70 via-transparent to-bg-primary/90" />
 
-      <div
-        className="pointer-events-none absolute left-8 top-7 z-20 text-lg font-bold tracking-tight"
-        style={{ fontFamily: 'var(--font-brand)' }}
-      >
+      {/* Brand mark */}
+      <div className="pointer-events-none absolute left-8 top-7 z-20 text-lg font-bold tracking-tight">
         NEXUS <span className="text-primary">STUDIO</span>
       </div>
 
       <AnimatePresence mode="wait">
-        {/* ENTER */}
+        {/* ───────────────────────── ENTER ───────────────────────── */}
         {stage === 'enter' && (
           <motion.section
             key="enter"
@@ -157,8 +168,8 @@ export default function StudioPage() {
               transition={{ delay: 0.5 }}
               className="mt-6 max-w-xl text-text-secondary"
             >
-              Design the team of autonomous employees you want to hire. Shape it, tune it, and
-              only pay when it&apos;s exactly right.
+              Design the team of autonomous employees you want to hire. Shape it, tune it,
+              and only pay when it&apos;s exactly right.
             </motion.p>
             <motion.button
               initial={{ opacity: 0, y: 24 }}
@@ -173,14 +184,14 @@ export default function StudioPage() {
                 boxShadow: '0 0 50px rgba(108,99,255,0.5)',
               }}
             >
-              Begin
+              Enter the studio
               <ArrowRight className="h-5 w-5 transition-transform group-hover:translate-x-1" />
             </motion.button>
             <p className="mt-6 text-xs text-text-tertiary">No card required to explore</p>
           </motion.section>
         )}
 
-        {/* SELECT */}
+        {/* ───────────────────────── SELECT PLAN ───────────────────────── */}
         {stage === 'select' && (
           <motion.section
             key="select"
@@ -197,6 +208,7 @@ export default function StudioPage() {
               </p>
             </div>
 
+            {/* plan cards docked at the bottom, aligned under the 3D crystals */}
             <div className="mx-auto grid w-full max-w-5xl grid-cols-1 gap-4 sm:grid-cols-3">
               {CORE_PLANS.map((plan, i) => {
                 const active = selection.planId === plan.id;
@@ -269,7 +281,7 @@ export default function StudioPage() {
           </motion.section>
         )}
 
-        {/* CUSTOMIZE */}
+        {/* ───────────────────────── CUSTOMIZE ───────────────────────── */}
         {stage === 'customize' && (
           <StagePanel
             key="customize"
@@ -306,7 +318,9 @@ export default function StudioPage() {
                         <span className="font-semibold">{a.name}</span>
                         <span className="whitespace-nowrap text-sm font-semibold text-secondary">
                           +{money(a.price)}
-                          <span className="text-text-tertiary">{a.cadence === 'mo' ? '/mo' : ' once'}</span>
+                          <span className="text-text-tertiary">
+                            {a.cadence === 'mo' ? '/mo' : ' once'}
+                          </span>
                         </span>
                       </div>
                       <p className="mt-1 text-sm text-text-secondary">{a.description}</p>
@@ -327,7 +341,7 @@ export default function StudioPage() {
           </StagePanel>
         )}
 
-        {/* REVIEW */}
+        {/* ───────────────────────── REVIEW ───────────────────────── */}
         {stage === 'review' && (
           <StagePanel
             key="review"
@@ -364,7 +378,7 @@ export default function StudioPage() {
           </StagePanel>
         )}
 
-        {/* PAY */}
+        {/* ───────────────────────── PAY ───────────────────────── */}
         {stage === 'pay' && (
           <motion.section
             key="pay"
@@ -377,11 +391,13 @@ export default function StudioPage() {
             <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-white/[0.04] p-8 backdrop-blur-2xl">
               <div className="mb-6 flex items-center gap-2 text-secondary">
                 <Lock className="h-4 w-4" />
-                <span className="text-xs font-semibold uppercase tracking-[0.25em]">Secure checkout</span>
+                <span className="text-xs font-semibold uppercase tracking-[0.25em]">
+                  Secure checkout
+                </span>
               </div>
               <h2 className="text-2xl font-bold">Confirm &amp; activate</h2>
               <p className="mt-1 text-sm text-text-secondary">
-                Review your total, then activate your workforce.
+                You&apos;ll enter card details on the next secure step.
               </p>
 
               <div className="my-6 space-y-2 rounded-2xl border border-white/10 bg-black/20 p-5">
@@ -401,22 +417,28 @@ export default function StudioPage() {
                 </div>
               </div>
 
+              {checkout.isError && (
+                <p className="mb-4 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+                  {checkout.error?.message || 'Could not start checkout. Please try again.'}
+                </p>
+              )}
+
               <button
-                onClick={handleActivate}
-                disabled={activating}
+                onClick={handleCheckout}
+                disabled={checkout.isPending}
                 className="flex w-full items-center justify-center gap-2 rounded-2xl py-4 font-semibold text-white transition disabled:opacity-60"
                 style={{
                   background: 'linear-gradient(135deg,#6C63FF,#00D4FF)',
                   boxShadow: '0 0 40px rgba(108,99,255,0.45)',
                 }}
               >
-                {activating ? (
+                {checkout.isPending ? (
                   <>
-                    <Loader2 className="h-5 w-5 animate-spin" /> Provisioning your workforce…
+                    <Loader2 className="h-5 w-5 animate-spin" /> Opening secure checkout…
                   </>
                 ) : (
                   <>
-                    Activate workforce · {money(order.dueToday)} <ArrowRight className="h-5 w-5" />
+                    Proceed to payment <ArrowRight className="h-5 w-5" />
                   </>
                 )}
               </button>
@@ -434,23 +456,26 @@ export default function StudioPage() {
           </motion.section>
         )}
 
-        {/* ONBOARD */}
+        {/* ───────────────────────── ONBOARD ───────────────────────── */}
         {stage === 'onboard' && order.plan && (
-          <OnboardStage key="onboard" plan={order.plan} agents={agents} onChange={updateAgent} onDeploy={() => setStage('dashboard')} />
+          <OnboardStage
+            key="onboard"
+            plan={order.plan}
+            agents={agents}
+            onChange={updateAgent}
+            onDeploy={() => setStage('dashboard')}
+          />
         )}
 
-        {/* DASHBOARD */}
+        {/* ───────────────────────── DASHBOARD ───────────────────────── */}
         {stage === 'dashboard' && order.plan && (
           <DashboardStage
             key="dashboard"
             plan={order.plan}
             agents={agents}
             order={order}
-            onReset={resetWorkforce}
-            onSignOut={() => {
-              signOut();
-              router.push('/');
-            }}
+            onReset={resetStudio}
+            onSignOut={() => signOut({ redirectUrl: '/' })}
           />
         )}
       </AnimatePresence>
@@ -507,8 +532,11 @@ function StagePanel({
           </div>
         </div>
 
+        {/* live order rail */}
         <aside className="hidden self-start rounded-3xl border border-white/10 bg-white/[0.03] p-6 backdrop-blur-2xl lg:block">
-          <p className="text-xs font-semibold uppercase tracking-[0.25em] text-secondary">Your build</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.25em] text-secondary">
+            Your build
+          </p>
           <div className="mt-4 space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-text-secondary">Plan</span>
@@ -555,7 +583,10 @@ function Row({
   return (
     <div className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
       <div className="flex items-center gap-3">
-        <span className="h-2.5 w-2.5 rounded-full" style={{ background: color ?? '#6C63FF' }} />
+        <span
+          className="h-2.5 w-2.5 rounded-full"
+          style={{ background: color ?? '#6C63FF' }}
+        />
         <div>
           <p className="font-semibold">{label}</p>
           {sub && <p className="text-xs text-text-secondary">{sub}</p>}

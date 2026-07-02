@@ -1,0 +1,815 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Auth & Organization
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  clerkId       String    @unique
+  name          String?
+  avatar        String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  organizations Organization[]
+  tasks         Task[]
+  auditLogs     AuditLog[]
+}
+
+model Organization {
+  id            String    @id @default(cuid())
+  name          String
+  slug          String    @unique
+  logo          String?
+  website       String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  users         User[]
+  agents        Agent[]
+  integrations  Integration[]
+  tasks         Task[]
+  subscription  Subscription?
+  contracts     LegalContract[]
+  playbooks     LegalPlaybook[]
+
+  // Automation backend relations
+  workflowRuns  WorkflowRun[]
+  costMetrics   CostMetric[]
+  modelRoutings ModelRouting[]
+  syncLogs      IntegrationSyncLog[]
+  deadLetters   IntegrationDeadLetter[]
+  auditLogs     AuditLog[]
+  oauthStates   OAuthState[]
+}
+
+// Subscriptions & Billing
+enum SubscriptionTier {
+  RECRUIT
+  OPERATOR
+  COMMANDER
+  EMPIRE
+  SOVEREIGN
+  CUSTOM
+}
+
+model Subscription {
+  id                String            @id @default(cuid())
+  organizationId    String            @unique
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  tier              SubscriptionTier  @default(RECRUIT)
+  stripeCustomerId  String?           @unique
+  stripeSubId       String?           @unique
+  stripeMeterId     String?           // Usage meter ID for overage tracking
+
+  status            String            // "active", "trialing", "past_due", "canceled", "unpaid"
+  currentPeriodStart DateTime?
+  currentPeriodEnd  DateTime?
+  canceledAt        DateTime?
+
+  // Tier limits
+  maxAgents         Int               @default(1)
+  maxConnectors     Int               @default(3)
+  maxModels         Int               @default(2)
+  monthlyRunLimit   Int               @default(500)      // Total task executions/month
+  monthlyTokenLimit Int               @default(1000000)  // Total tokens/month
+
+  // Billing tracking
+  currentMonthRuns  Int               @default(0)        // Reset on periodStart
+  currentMonthTokens Int              @default(0)
+  currentMonthCostUSD Float           @default(0)
+
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@index([stripeCustomerId])
+  @@index([status, currentPeriodEnd])
+}
+
+// AI Agents
+enum AgentModel {
+  CLAUDE_HAIKU
+  CLAUDE_SONNET
+  CLAUDE_OPUS
+  GPT_4O
+  GEMINI_PRO
+  LLAMA_70B
+  MISTRAL_LARGE
+}
+
+enum AgentStatus {
+  DRAFT
+  SANDBOX
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+model Agent {
+  id              String            @id @default(cuid())
+  organizationId  String
+  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  name            String
+  description     String?
+  role            String            // "Sales Development Rep", "Customer Support", etc.
+  status          AgentStatus       @default(DRAFT)
+  model           AgentModel        @default(CLAUDE_SONNET)
+
+  // Configuration
+  systemPrompt    String?
+  tools           String[]          // JSON array of tool IDs
+  temperature     Float             @default(0.7)
+  maxTokens       Int               @default(2000)
+  timeoutSeconds  Int               @default(300)
+
+  // Execution tracking
+  schedule        String?           // cron expression (e.g., "0 9 * * MON-FRI")
+  lastRun         DateTime?
+  nextRun         DateTime?
+  isRunning       Boolean           @default(false)
+
+  // Memory & context management
+  contextWindow   String?           // JSON serialized (vector IDs, summaries)
+  memorySummary   String?
+  enableRAG       Boolean           @default(false)
+  ragIndexId      String?           // Reference to vector store index
+
+  // Sandbox test results
+  sandboxTestsPassed Int            @default(0)
+  sandboxTestsFailed Int            @default(0)
+  sandboxStatus   String?           // "pending", "running", "passed", "failed"
+
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // Relations
+  tasks           Task[]
+  workflowRuns    WorkflowRun[]      @relation("agent_lifecycle")
+  taskExecutions  TaskExecution[]
+  costMetrics     CostMetric[]
+
+  @@index([organizationId, status])
+  @@index([status, nextRun])
+}
+
+// Task Execution
+enum TaskStatus {
+  PENDING
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  TIMEOUT
+  CANCELED
+}
+
+model Task {
+  id              String            @id @default(cuid())
+  organizationId  String
+  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  agentId         String
+  agent           Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status          TaskStatus        @default(PENDING)
+  prompt          String
+  result          String?           // JSON result
+  error           String?
+
+  // Execution details
+  priority        Int               @default(0)        // 0 = normal, 1 = high, -1 = low
+  startedAt       DateTime?
+  completedAt     DateTime?
+  duration        Int?              // milliseconds
+
+  // Linked execution record (for cost tracking)
+  executionId     String?
+  execution       TaskExecution?    @relation("task_execution")
+
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([organizationId, status, createdAt])
+  @@index([agentId, status])
+  @@index([userId, createdAt])
+}
+
+// ─── Workflow Orchestration (NEW) ─────────────────────────────────────
+
+enum WorkflowStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  RETRYING
+  CANCELED
+}
+
+model WorkflowRun {
+  id                String            @id @default(cuid())
+  organizationId    String
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  functionId        String            // "agents/lifecycle.create", "tasks/execute", etc.
+  functionName      String
+
+  status            WorkflowStatus    @default(PENDING)
+
+  // Data I/O
+  inputData         String?           // JSON input to workflow
+  outputData        String?           // JSON output from workflow
+  errorMessage      String?
+
+  // Timing & retry tracking
+  startedAt         DateTime          @default(now())
+  completedAt       DateTime?
+  durationMs        Int?
+
+  retryCount        Int               @default(0)
+  nextRetryAt       DateTime?
+  lastRetryError    String?
+
+  // Inngest integration
+  inngestRunId      String?           @unique
+  inngestBatchId    String?
+
+  // Resource associations
+  agentId           String?
+  agent             Agent?            @relation("agent_lifecycle", fields: [agentId], references: [id], onDelete: SetNull)
+  contractId        String?
+
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@index([organizationId, functionId, createdAt])
+  @@index([functionId, status, createdAt])
+  @@index([status, nextRetryAt])
+  @@index([inngestRunId])
+}
+
+// ─── Task Execution Details (NEW - for billing & debugging) ────────────
+
+enum ExecutionStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  TIMEOUT
+}
+
+model TaskExecution {
+  id                String            @id @default(cuid())
+  organizationId    String
+  taskId            String            @unique
+  task              Task              @relation("task_execution", fields: [taskId], references: [id], onDelete: Cascade)
+
+  agentId           String
+  agent             Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  modelUsed         String            // "claude-3-haiku-20240307", "gpt-4o", etc.
+  status            ExecutionStatus   @default(PENDING)
+
+  // Execution input/output
+  input             String?           // Task input/prompt
+  output            String?           // Agent response/result
+  errorMessage      String?           // Error details if failed
+
+  // Token accounting
+  inputTokens       Int               @default(0)
+  outputTokens      Int               @default(0)
+  totalTokens       Int               @default(0)
+
+  // Cost calculation
+  costUSD           Float             @default(0)
+
+  // Execution details
+  startedAt         DateTime          @default(now())
+  completedAt       DateTime?
+  durationMs        Int?
+
+  // Retry tracking
+  retryCount        Int               @default(0)
+  lastError         String?
+
+  // Inngest tracing
+  inngestRunId      String?
+
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, modelUsed, createdAt])
+  @@index([agentId, createdAt])
+  @@index([status, createdAt])
+}
+
+// ─── Cost Tracking & Optimization (NEW) ───────────────────────────────
+
+enum CostPeriod {
+  HOUR
+  DAY
+  MONTH
+}
+
+model CostMetric {
+  id                String            @id @default(cuid())
+  organizationId    String
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  agentId           String?
+  agent             Agent?            @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  period            CostPeriod
+  periodStart       DateTime
+  periodEnd         DateTime
+
+  // Model breakdown
+  model             String            // "haiku", "sonnet", "opus"
+
+  // Token aggregation
+  taskCount         Int               @default(0)
+  totalTokens       Int               @default(0)
+  inputTokens       Int               @default(0)
+  outputTokens      Int               @default(0)
+
+  // Cost summary
+  estimatedCostUSD  Float             @default(0)
+
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@unique([organizationId, agentId, period, periodStart, model])
+  @@index([organizationId, periodStart, model])
+  @@index([organizationId, periodEnd])
+}
+
+// ─── Model Routing Rules (NEW - for cost optimization) ─────────────────
+
+model ModelRouting {
+  id                String            @id @default(cuid())
+  organizationId    String
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  agentId           String?           // NULL = org-wide default rule
+
+  // Routing decision criteria
+  tokenBucketMin    Int               // If estimated input + output tokens >= this
+  tokenBucketMax    Int               // and < this
+  recommendedModel  String            // Use this model ("haiku", "sonnet", "opus")
+
+  // Metadata
+  reason            String            // "cost_optimization", "sla", "tier_limit", "user_override"
+  isActive          Boolean           @default(true)
+  priority          Int               @default(0)        // Higher = evaluated first
+
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@index([organizationId, tokenBucketMin])
+  @@index([organizationId, isActive])
+}
+
+// Integrations
+enum IntegrationProvider {
+  // CRM
+  SALESFORCE
+  HUBSPOT
+  PIPEDRIVE
+
+  // Communications
+  SLACK
+  MS_TEAMS
+  DISCORD
+  TELEGRAM
+
+  // Productivity
+  GOOGLE_WORKSPACE
+  MICROSOFT_365
+  NOTION
+  AIRTABLE
+
+  // Automation
+  ZAPIER
+  MAKE
+
+  // AI Tools
+  OPENAI
+  ANTHROPIC
+  GOOGLE_AI
+  PERPLEXITY
+
+  // Legal DMS
+  CLIO
+  IMANAGE
+  NETDOCUMENTS
+
+  // Other
+  STRIPE
+  CUSTOM_API
+}
+
+model Integration {
+  id              String                @id @default(cuid())
+  organizationId  String
+  organization    Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  provider        IntegrationProvider
+  name            String
+  displayName     String?
+
+  // Auth & config
+  accessToken     String?               // Encrypted (AES-256)
+  refreshToken    String?               // Encrypted
+  tokenType       String?               // "Bearer", "Basic", etc.
+  tokenExpiresAt  DateTime?             // When access token expires
+  expiresAt       DateTime?
+  config          String?               // JSON config (encrypted if sensitive)
+
+  // Token lifecycle tracking
+  lastRefreshAt   DateTime?             // When token was last refreshed
+  refreshedCount  Int                   @default(0)
+
+  // Status tracking
+  isActive        Boolean               @default(true)
+  lastSyncAt      DateTime?
+  lastError       String?
+  errorCount      Int                   @default(0)
+
+  // OAuth state
+  oauthState      String?               // For in-flight OAuth flows
+
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  syncLogs        IntegrationSyncLog[]
+  deadLetters     IntegrationDeadLetter[]
+
+  @@unique([organizationId, provider])
+  @@index([organizationId, isActive])
+}
+
+model IntegrationSyncLog {
+  id                String            @id @default(cuid())
+  organizationId    String
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  integrationId     String
+  integration       Integration       @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  syncStatus        String            // "pending", "running", "succeeded", "failed"
+  recordsSynced     Int               @default(0)
+  errorMessage      String?
+
+  startedAt         DateTime          @default(now())
+  completedAt       DateTime?
+  durationMs        Int?
+
+  retryCount        Int               @default(0)
+  nextRetryAt       DateTime?
+
+  createdAt         DateTime          @default(now())
+
+  @@index([organizationId, integrationId, createdAt])
+  @@index([syncStatus, createdAt])
+}
+
+model IntegrationDeadLetter {
+  id                        String            @id @default(cuid())
+  organizationId            String
+  organization              Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  integrationId             String
+  integration               Integration       @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  provider                  IntegrationProvider
+  failureReason             String            // "max_retries_exceeded", "token_refresh_failed", "rate_limit", etc
+  metadata                  String?           // JSON metadata about the failure
+  requiresManualIntervention Boolean          @default(true)
+
+  resolvedAt                DateTime?
+  resolutionNotes           String?
+
+  createdAt                 DateTime          @default(now())
+
+  @@index([organizationId, integrationId])
+  @@index([requiresManualIntervention, createdAt])
+}
+
+// ─── Legal Assistant ─────────────────────────────────────────────────────────
+
+enum ContractType {
+  NDA
+  MSA
+  SOW
+  EMPLOYMENT
+  COMMERCIAL_LEASE
+  SAAS_AGREEMENT
+  VENDOR_AGREEMENT
+  INDEPENDENT_CONTRACTOR
+  OTHER
+}
+
+enum ContractStatus {
+  DRAFT
+  PENDING_REVIEW      // waiting for attorney gate
+  IN_REVIEW           // attorney currently reviewing
+  REVISION_REQUESTED
+  APPROVED
+  EXECUTED
+  ARCHIVED
+}
+
+enum ReviewDecision {
+  APPROVE
+  REVISE
+  ESCALATE
+  REJECT
+}
+
+model LegalContract {
+  id              String          @id @default(cuid())
+  organizationId  String
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  title           String
+  contractType    ContractType
+  status          ContractStatus  @default(DRAFT)
+  jurisdiction    String?         // e.g., "CA", "NY", "DE"
+
+  // Document storage (Vercel Blob URLs)
+  originalDocUrl  String?         // counterparty's incoming contract
+  draftDocUrl     String?         // AI-generated draft
+  draftText       String?         // full text of AI-generated draft
+  redlineDocUrl   String?         // AI redlined version
+  finalDocUrl     String?         // attorney-approved final
+
+  // Matter context (from Clio)
+  clioMatterId    String?
+  clioClientName  String?
+  clioMatterName  String?
+
+  // LangGraph thread for async resume
+  threadId        String?         @unique
+
+  // Playbook & RAG
+  playbookId      String?
+  precedentIds    String[]        // IDs of retrieved precedent clauses
+
+  // Revision tracking
+  revisionCount   Int             @default(0)
+  matterValue     Float?          // triggers Opus escalation if > 1M
+
+  // DMS writeback
+  dmsProvider     String?         // "CLIO" | "IMANAGE" | "NETDOCUMENTS"
+  dmsDocumentId   String?         // ID in the DMS after upload
+
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  // Relations
+  reviews         ContractReview[]
+  auditEvents     LegalAuditEvent[]
+}
+
+model ContractReview {
+  id              String          @id @default(cuid())
+  contractId      String
+  contract        LegalContract   @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  reviewerUserId  String
+  decision        ReviewDecision?
+  comments        String?
+  requestedAt     DateTime        @default(now())
+  decidedAt       DateTime?
+
+  // Which redline version was reviewed
+  redlineDocUrl   String?
+  modelVersion    String?         // e.g. "claude-sonnet-4-6"
+  inputHash       String?
+  outputHash      String?
+}
+
+model LegalPlaybook {
+  id              String          @id @default(cuid())
+  organizationId  String
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  name            String
+  contractType    ContractType
+  jurisdiction    String?
+
+  // JSON array of clause rules: [{clauseType, position, fallbackLanguage, dealBreaker}]
+  rules           String
+
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model LegalAuditEvent {
+  id              String          @id @default(cuid())
+  organizationId  String
+  contractId      String
+  contract        LegalContract   @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  actor           String          // "AI" | userId
+  actorModel      String?         // "claude-sonnet-4-6"
+  action          String          // "draft_generated" | "redline_generated" | "attorney_approved" | etc.
+
+  inputHash       String?
+  outputHash      String?
+  changesSummary  String?
+  metadata        String?         // JSON
+
+  createdAt       DateTime        @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([contractId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─── Observability & Monitoring (NEW) ────────────────────────────────
+
+model MetricSnapshot {
+  id                String            @id @default(cuid())
+
+  timestamp         DateTime          @default(now())
+
+  // Latency percentiles (ms)
+  taskLatencyP50    Float?
+  taskLatencyP95    Float?
+  taskLatencyP99    Float?
+
+  // Errors
+  taskErrorRate     Float?            // 0.0-1.0
+  failedTaskCount   Int               @default(0)
+
+  // Queue
+  queueDepth        Int               @default(0)
+  avgQueueWaitMs    Float?
+
+  // Cost
+  avgCostPerTask    Float?
+  totalCostUSD      Float?
+
+  // Throughput
+  totalTasksExecuted Int              @default(0)
+  totalTokensUsed   Int               @default(0)
+
+  // System health
+  uptime            Float?            // 0.0-1.0
+
+  createdAt         DateTime          @default(now())
+
+  @@index([timestamp])
+}
+
+// ─── OAuth State Management ───────────────────────────────────────────
+
+model OAuthState {
+  id            String   @id @default(cuid())
+  organizationId String
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  provider      String           // "SALESFORCE", "SLACK", "HUBSPOT", etc.
+  state         String   @unique // CSRF token
+  codeVerifier  String?          // For PKCE flow (future use)
+
+  expiresAt     DateTime         // 10-minute expiry
+  createdAt     DateTime @default(now())
+
+  @@index([provider, expiresAt])
+  @@index([organizationId, provider])
+}
+
+// ─── API Keys & Webhooks ──────────────────────────────────────────────
+
+enum ApiKeyStatus {
+  ACTIVE
+  DEPRECATED
+  REVOKED
+}
+
+model ApiKey {
+  id              String            @id @default(cuid())
+  organizationId  String
+
+  keyHash         String?           @unique  // SHA-256 hash (never store raw key)
+  key             String?           @unique  // Legacy: For backwards compatibility (OAuth state temp storage)
+  name            String
+  prefix          String            @default("sk_")  // e.g., "sk_prod_12345..."
+
+  status          ApiKeyStatus      @default(ACTIVE)
+  lastUsedAt      DateTime?
+  lastRotatedAt   DateTime?
+  expiresAt       DateTime?         // 90 days from creation
+
+  createdAt       DateTime          @default(now())
+  revokedAt       DateTime?
+
+  @@index([organizationId, status])
+}
+
+// ─── Audit Logging (Enhanced) ─────────────────────────────────────────
+
+enum AuditAction {
+  // Legacy (kept for backward compatibility)
+  USER_LOGIN
+  USER_LOGOUT
+  USER_CREATED
+  USER_UPDATED
+  ORG_CREATED
+  ORG_UPDATED
+  INTEGRATION_UPDATED
+  INTEGRATION_SYNC
+  ADMIN_ACTION
+  API_KEY_DELETED
+
+  // Workflow (new)
+  WORKFLOW_STARTED
+  WORKFLOW_COMPLETED
+  WORKFLOW_FAILED
+  WORKFLOW_RETRIED
+
+  // Agent lifecycle (extended)
+  AGENT_CREATED
+  AGENT_UPDATED
+  AGENT_DELETED
+  AGENT_ACTIVATED
+  AGENT_PAUSED
+  AGENT_SANDBOX_TEST_RUN
+
+  // Task execution (extended)
+  TASK_CREATED
+  TASK_EXECUTED
+  TASK_COMPLETED
+  TASK_FAILED
+  TASK_RETRIED
+
+  // Integration (extended)
+  INTEGRATION_CONNECTED
+  INTEGRATION_DISCONNECTED
+  INTEGRATION_SYNCED
+  INTEGRATION_SYNC_FAILED
+
+  // Subscription (extended)
+  SUBSCRIPTION_CREATED
+  SUBSCRIPTION_UPGRADED
+  SUBSCRIPTION_DOWNGRADED
+  SUBSCRIPTION_CANCELED
+  SUBSCRIPTION_RENEWED
+
+  // Billing (new)
+  BILLING_USAGE_REPORTED
+  BILLING_OVERAGE_APPLIED
+  BILLING_INVOICE_ISSUED
+  BILLING_PAYMENT_FAILED
+
+  // Contract (new)
+  CONTRACT_UPLOADED
+  CONTRACT_REVIEW_REQUESTED
+  CONTRACT_APPROVED
+  CONTRACT_REJECTED
+
+  // Compliance (extended)
+  API_KEY_CREATED
+  API_KEY_ROTATED
+  API_KEY_REVOKED
+  AUDIT_LOG_EXPORTED
+}
+
+model AuditLog {
+  id              String            @id @default(cuid())
+  organizationId  String
+  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  action          AuditAction
+  resource        String            // "Agent", "Task", "Integration", "Subscription"
+  resourceId      String?
+
+  changes         String?           // JSON diff
+  metadata        String?           // Additional context (JSON)
+
+  ipAddress       String?
+  userAgent       String?
+
+  createdAt       DateTime          @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@index([resourceId, createdAt])
+}

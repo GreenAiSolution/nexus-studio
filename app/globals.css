@@ -21,6 +21,11 @@
   --border-default: #1E2030;
   --border-light: #2A3040;
 
+  /* Semantic */
+  --success: #10B981;
+  --warning: #F59E0B;
+  --error: #EF4444;
+
   --font-sans: 'Inter', system-ui, sans-serif;
   --font-brand: 'Space Grotesk', 'Inter', sans-serif;
 }
@@ -42,6 +47,10 @@
 
   --color-border: var(--border-default);
   --color-border-light: var(--border-light);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
 }
 
 html {
